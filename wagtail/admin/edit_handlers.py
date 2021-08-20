@@ -804,7 +804,7 @@ Page.promote_panels = [
 ]
 
 Page.settings_panels = [
-    PublishingPanel(),
+    #PublishingPanel(),
     PrivacyModalPanel(),
 ]
 
