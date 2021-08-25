@@ -13,10 +13,12 @@ from django.utils.translation import gettext_lazy
 from taggit.managers import TaggableManager
 
 from wagtail.admin import compare, widgets
+from wagtail.core import blocks
 from wagtail.core.fields import RichTextField
-from wagtail.core.models import Page
+from wagtail.core.models import Page, PageRevisionSchedule
 from wagtail.core.utils import camelcase_to_underscore, resolve_model_string
 from wagtail.utils.decorators import cached_classmethod
+from wagtail.core import hooks
 
 # DIRECT_FORM_FIELD_OVERRIDES, FORM_FIELD_OVERRIDES are imported for backwards
 # compatibility, as people are likely importing them from here and then
@@ -746,6 +748,32 @@ class InlinePanel(EditHandler):
             'can_order': self.formset.can_order,
         }))
 
+class StreamFieldPanel(FieldPanel):
+    def classes(self):
+        classes = super().classes()
+        classes.append("stream-field")
+
+        # In case of a validation error, BlockWidget will take care of outputting the error on the
+        # relevant sub-block, so we don't want the stream block as a whole to be wrapped in an 'error' class.
+        if 'error' in classes:
+            classes.remove("error")
+
+        return classes
+
+    def html_declarations(self):
+        return self.block_def.all_html_declarations()
+
+    def get_comparison_class(self):
+        return compare.StreamFieldComparison
+
+    def id_for_label(self):
+        # a StreamField may consist of many input fields, so it's not meaningful to
+        # attach the label to any specific one
+        return ""
+
+    def on_model_bound(self):
+        super().on_model_bound()
+        self.block_def = self.db_field.stream_block
 
 # This allows users to include the publishing panel in their own per-model override
 # without having to write these fields out by hand, potentially losing 'classname'
@@ -757,6 +785,9 @@ class PublishingPanel(MultiFieldPanel):
                 FieldRowPanel([
                     FieldPanel('go_live_at'),
                     FieldPanel('expire_at'),
+                ], classname="label-above"),
+                FieldRowPanel([
+                    InlinePanel('schedules'),
                 ], classname="label-above"),
             ],
             'heading': gettext_lazy('Scheduled publishing'),
@@ -787,8 +818,7 @@ class PrivacyModalPanel(EditHandler):
             content,
             versioned_static('wagtailadmin/js/privacy-switch.js'))
         )
-
-
+        
 # Now that we've defined EditHandlers, we can set up wagtailcore.Page to have some.
 Page.content_panels = [
     FieldPanel('title', classname="full title"),
@@ -804,12 +834,22 @@ Page.promote_panels = [
 ]
 
 Page.settings_panels = [
-    #PublishingPanel(),
+    PublishingPanel(),
     PrivacyModalPanel(),
 ]
 
 Page.base_form_class = WagtailAdminPageForm
 
+PageRevisionSchedule.panels = [
+    #FieldPanel('page_revision'),
+    FieldPanel('go_live_at'),
+    FieldPanel('expire_at'),
+]
+
+@hooks.register("insert_global_admin_css", order=100)
+def global_admin_css():
+    """Hides the add button for page schedules."""
+    return '<style>#id_schedules-ADD{display:none;}</style>'
 
 @cached_classmethod
 def get_edit_handler(cls):
@@ -842,29 +882,3 @@ def get_edit_handler(cls):
 Page.get_edit_handler = get_edit_handler
 
 
-class StreamFieldPanel(FieldPanel):
-    def classes(self):
-        classes = super().classes()
-        classes.append("stream-field")
-
-        # In case of a validation error, BlockWidget will take care of outputting the error on the
-        # relevant sub-block, so we don't want the stream block as a whole to be wrapped in an 'error' class.
-        if 'error' in classes:
-            classes.remove("error")
-
-        return classes
-
-    def html_declarations(self):
-        return self.block_def.all_html_declarations()
-
-    def get_comparison_class(self):
-        return compare.StreamFieldComparison
-
-    def id_for_label(self):
-        # a StreamField may consist of many input fields, so it's not meaningful to
-        # attach the label to any specific one
-        return ""
-
-    def on_model_bound(self):
-        super().on_model_bound()
-        self.block_def = self.db_field.stream_block

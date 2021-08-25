@@ -51,6 +51,8 @@ from wagtail.core.treebeard import TreebeardPathFixMixin
 from wagtail.core.url_routing import RouteResult
 from wagtail.core.utils import WAGTAIL_APPEND_SLASH, camelcase_to_underscore, resolve_model_string
 from wagtail.search import index
+from wagtail.core.fields import StreamField
+from wagtail.core import blocks
 
 from .utils import (
     find_available_slug, get_content_languages, get_supported_content_language_variant)
@@ -1325,7 +1327,16 @@ class Page(AbstractPage, index.Indexed, ClusterableModel, metaclass=PageBase):
             approved_go_live_at=approved_go_live_at,
         )
 
+
         update_fields = []
+
+        # Set go_live_at and expire_at to null, create new PageRevisionSchedule object
+        if self.go_live_at or self.expire_at:
+            latest_revision = PageRevision.objects.filter(page=self).order_by('-created_at', '-id').first()
+            self.schedules.create(page_revision=latest_revision, go_live_at=self.go_live_at, expire_at=self.expire_at)
+            print(PageRevisionSchedule.objects.all())
+            self.go_live_at = self.expire_at = None
+            update_fields += ['go_live_at', 'expire_at']
 
         self.latest_revision_created_at = revision.created_at
         update_fields.append('latest_revision_created_at')
@@ -3026,6 +3037,26 @@ class PageRevision(models.Model):
         verbose_name = _('page revision')
         verbose_name_plural = _('page revisions')
 
+class PageRevisionSchedule(models.Model):
+    page = ParentalKey('Page', on_delete=models.CASCADE, related_name='schedules')
+    page_revision = models.ForeignKey(
+        'PageRevision', on_delete=models.CASCADE, related_name='schedules')
+
+    go_live_at = models.DateTimeField(
+        verbose_name=_("go live date/time"),
+        blank=True,
+        null=True
+    )
+    expire_at = models.DateTimeField(
+        verbose_name=_("expiry date/time"),
+        blank=True,
+        null=True
+    )
+
+    panels = []
+
+    class Meta:
+        unique_together = ('page', 'page_revision')
 
 PAGE_PERMISSION_TYPES = [
     ('add', _("Add"), _("Add/edit pages you own")),
