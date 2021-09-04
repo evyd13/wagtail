@@ -1031,7 +1031,6 @@ class Page(AbstractPage, index.Indexed, ClusterableModel, metaclass=PageBase):
                     update_descendant_url_paths = True
                     old_url_path = old_record.url_path
                     new_url_path = self.url_path
-
         result = super().save(**kwargs)
 
         if not is_new and update_descendant_url_paths:
@@ -1327,16 +1326,16 @@ class Page(AbstractPage, index.Indexed, ClusterableModel, metaclass=PageBase):
             approved_go_live_at=approved_go_live_at,
         )
 
-
         update_fields = []
+        self.delete_revision_schedules()
 
         # Set go_live_at and expire_at to null, create new PageRevisionSchedule object
         if self.go_live_at or self.expire_at:
-            latest_revision = PageRevision.objects.filter(page=self).order_by('-created_at', '-id').first()
-            self.schedules.create(page_revision=latest_revision, go_live_at=self.go_live_at, expire_at=self.expire_at)
-            print(PageRevisionSchedule.objects.all())
+            latest_revision = self.get_latest_revision()
+            new_schedule = PageRevisionSchedule.objects.create(page=self, page_revision=latest_revision, go_live_at=self.go_live_at, expire_at=self.expire_at)
             self.go_live_at = self.expire_at = None
             update_fields += ['go_live_at', 'expire_at']
+            latest_revision.update_revision_schedules()
 
         self.latest_revision_created_at = revision.created_at
         update_fields.append('latest_revision_created_at')
@@ -1382,6 +1381,24 @@ class Page(AbstractPage, index.Indexed, ClusterableModel, metaclass=PageBase):
             logger.info("Page submitted for moderation: \"%s\" id=%d revision_id=%d", self.title, self.id, revision.id)
 
         return revision
+
+    def delete_revision_schedules(self):
+        latest_revision = self.get_latest_revision()
+        existing_revision_schedule_ids = [int(x.id) for x in PageRevisionSchedule.objects.filter(page=self)]
+
+        json_data = json.loads(self.to_json())
+        submitted_revision_schedule_ids = [int(x['pk']) for x in json_data['schedules']]
+
+        remove_these_schedules = []
+        for id in existing_revision_schedule_ids:
+            if id not in submitted_revision_schedule_ids:
+                remove_these_schedules.append(id)
+        for id in remove_these_schedules:
+            try:
+                PageRevisionSchedule.objects.filter(page=self, id=id).first().delete()
+            except Exception as e:
+                print(e)
+        latest_revision.save()
 
     def get_latest_revision(self):
         return self.revisions.order_by('-created_at', '-id').first()
@@ -2817,6 +2834,22 @@ class PageRevision(models.Model):
     objects = models.Manager()
     submitted_revisions = SubmittedRevisionsManager()
 
+    def update_revision_schedules(self):    
+        if self.id:
+            json_data = json.loads(self.content_json)
+            json_data.update({'go_live_at': None, 'expire_at': None})
+            if self.id >= self.page.get_latest_revision().id:
+                for data in json_data['schedules']:
+                    obj = PageRevisionSchedule.objects.get(id=data['pk'])
+                    obj.go_live_at = data['go_live_at']
+                    obj.expire_at = data['expire_at']
+                    obj.save()
+            json_data['schedules'] = []
+            for revisionschedule in PageRevisionSchedule.objects.filter(page=self.page):
+                json_data['schedules'].append(json.loads(revisionschedule.to_json()))
+            self.content_json = json.dumps(json_data)
+            
+
     def save(self, user=None, *args, **kwargs):
         # Set default value for created_at to now
         # We cannot use auto_now_add as that will override
@@ -2851,6 +2884,8 @@ class PageRevision(models.Model):
             )
 
     def as_page_object(self):
+        self.update_revision_schedules()
+        self.save()
         return self.page.specific.with_content_json(self.content_json)
 
     def approve_moderation(self, user=None):
@@ -3054,6 +3089,9 @@ class PageRevisionSchedule(models.Model):
     )
 
     panels = []
+
+    def to_json(self):
+        return json.dumps({'pk': self.id, 'page': self.page.id, 'page_revision': self.page_revision.id, 'go_live_at': str(self.go_live_at) if self.go_live_at else None, 'expire_at': str(self.expire_at) if self.expire_at else None})
 
     class Meta:
         unique_together = ('page', 'page_revision')
